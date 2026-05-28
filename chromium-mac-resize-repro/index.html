@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mac Chrome resize recalc regression (≥147.0.7683.0)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  html, body { margin: 0; padding: 0; font: 14px/1.4 system-ui, sans-serif; }
+  body { padding: 16px 24px 24px; }
+  .repro-header {
+    position: sticky; top: 0; background: canvas; padding: 12px 0; z-index: 1000;
+    border-bottom: 1px solid color-mix(in srgb, canvastext 20%, transparent);
+  }
+  .repro-header h1 { margin: 0 0 8px; font-size: 18px; }
+  .repro-header p { margin: 4px 0; }
+  .metrics {
+    display: flex; gap: 16px; flex-wrap: wrap; margin: 8px 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .metrics span { padding: 4px 10px; background: color-mix(in srgb, canvastext 8%, transparent); border-radius: 4px; }
+  .metrics b { font-weight: 600; }
+  .nodes {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 2px;
+    margin-top: 16px;
+  }
+  .node {
+    padding: 4px 6px;
+    font-size: 11px;
+    background: color-mix(in srgb, canvastext 5%, transparent);
+    border-radius: 2px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .node--deep > .node { margin-left: 6px; }
+</style>
+</head>
+<body>
+<div class="repro-header">
+  <h1>Mac Chrome resize-recalc regression repro</h1>
+  <p>
+    <b>Bug:</b> on macOS, Chrome ≥ <code>147.0.7683.0</code> recalculates styles synchronously
+    on every window-resize event, blocking the main thread on pages with large DOM + large CSS.
+    Does not reproduce on Windows or Linux. Does not reproduce on Chrome ≤ <code>146</code>.
+  </p>
+  <p>
+    <b>Suspect commit:</b>
+    <a href="https://chromium.googlesource.com/chromium/src/+/8b74eeb7900126d50c16bf36b010ce757b9ffc3a">
+      8b74eeb7 — [Mac] Use specified deadline 0 when resizing
+    </a>
+  </p>
+  <p>
+    <b>How to reproduce:</b> drag a window edge to resize this page slowly over ~3 seconds.
+    On affected builds the page freezes; on unaffected builds recalculations are skipped.
+    Open DevTools → Performance, record a resize, observe "Recalculate Style" tasks.
+  </p>
+  <div class="metrics">
+    <span>DOM nodes: <b id="m-nodes">0</b></span>
+    <span>CSS rules: <b id="m-rules">0</b></span>
+  </div>
+</div>
+<div id="nodes" class="nodes"></div>
+
+<script>
+// ---------- 1) Generate ~10,000 DOM nodes ----------
+(() => {
+  const root = document.getElementById('nodes');
+  const FLAT = 7000;
+  const NESTED_PARENTS = 1000;   // each gets 3 children → +3000
+  const frag = document.createDocumentFragment();
+
+  for (let i = 0; i < FLAT; i++) {
+    const d = document.createElement('div');
+    d.className = `node node--flat kind-${i % 23} state-${i % 7} bucket-${i % 11}`;
+    d.dataset.idx = i;
+    d.dataset.kind = `k${i % 23}`;
+    d.dataset.state = i % 5 === 0 ? 'active' : 'idle';
+    d.textContent = `n${i}`;
+    frag.appendChild(d);
+  }
+  for (let i = 0; i < NESTED_PARENTS; i++) {
+    const p = document.createElement('div');
+    p.className = `node node--deep group-${i % 13}`;
+    p.dataset.idx = FLAT + i;
+    for (let j = 0; j < 3; j++) {
+      const c = document.createElement('div');
+      c.className = `node node--child child-${j} kind-${(i + j) % 23}`;
+      c.textContent = `n${FLAT + i}.${j}`;
+      p.appendChild(c);
+    }
+    frag.appendChild(p);
+  }
+  root.appendChild(frag);
+  document.getElementById('m-nodes').textContent = document.querySelectorAll('.node').length.toLocaleString();
+})();
+
+// ---------- 2) Generate ~50,000 CSS rules ----------
+// Mix of selector shapes that the style engine cannot trivially bloom-filter away,
+// matching the cost model observed in production apps with monolithic CSS bundles.
+(() => {
+  const parts = [];
+  const N = 50000;
+
+  // Bucket A: simple class rules (most won't match → dead weight scanned each recalc)
+  for (let i = 0; i < N * 0.5; i++) {
+    parts.push(`.unused-class-${i}{color:rgb(${i % 256},${(i * 3) % 256},${(i * 7) % 256});}`);
+  }
+  // Bucket B: descendant chains + attribute selectors
+  for (let i = 0; i < N * 0.2; i++) {
+    parts.push(`.zone-${i % 50} [data-kind="k${i % 23}"] .child-${i % 3}{margin-left:${i % 8}px;}`);
+  }
+  // Bucket C: pseudo-classes / :not() (state-dependent, recomputed on layout-affecting changes)
+  for (let i = 0; i < N * 0.15; i++) {
+    parts.push(`.kind-${i % 23}:not(.bucket-${(i + 1) % 11}):hover{background:hsl(${i % 360} 50% 50%);}`);
+  }
+  // Bucket D: viewport-dependent rules (these are why resize triggers recalc)
+  for (let i = 0; i < N * 0.1; i++) {
+    const bp = 320 + (i % 50) * 20;
+    parts.push(`@media (min-width:${bp}px){.kind-${i % 23} .child-${i % 3}{padding:${i % 4}px;}}`);
+  }
+  // Bucket E: vw/vh units — direct viewport dependency, force per-resize recalc
+  for (let i = 0; i < N * 0.05; i++) {
+    parts.push(`.state-${i % 7}.bucket-${i % 11}{min-width:${(i % 20) + 1}vw;max-height:${(i % 30) + 5}vh;}`);
+  }
+
+  const style = document.createElement('style');
+  style.id = 'generated-bulk-css';
+  style.textContent = parts.join('\n');
+  document.head.appendChild(style);
+
+  // Count rules accurately via CSSOM
+  let ruleCount = 0;
+  try {
+    for (const r of style.sheet.cssRules) {
+      ruleCount++;
+      if (r.cssRules) ruleCount += r.cssRules.length;
+    }
+  } catch (e) {
+    ruleCount = parts.length;
+  }
+  document.getElementById('m-rules').textContent = ruleCount.toLocaleString();
+})();
+
+// ---------- 3) Observe resize-triggered recalcs ----------
+// PerformanceObserver for long tasks during resize. Logs to console so triager can
+// reproduce via DevTools → Console.
+(() => {
+  if (!('PerformanceObserver' in window)) return;
+  try {
+    const po = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (entry.duration > 50) {
+          console.log(`[long task] ${entry.duration.toFixed(1)} ms during/after resize`);
+        }
+      }
+    });
+    po.observe({ type: 'longtask', buffered: true });
+  } catch (e) { /* ignore */ }
+})();
+</script>
+</body>
+</html>

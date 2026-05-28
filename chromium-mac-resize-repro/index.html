@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Mac Chrome resize recalc regression (≥147.0.7683.0)</title>
+<title>Mac Chrome resize-recalc regression (≥147.0.7683.0)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root { color-scheme: light dark; }
@@ -14,36 +14,53 @@
   }
   .repro-header h1 { margin: 0 0 8px; font-size: 18px; }
   .repro-header p { margin: 4px 0; }
+  .repro-header code { background: color-mix(in srgb, canvastext 8%, transparent); padding: 1px 4px; border-radius: 3px; }
   .metrics {
-    display: flex; gap: 16px; flex-wrap: wrap; margin: 8px 0;
+    display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 4px;
     font-variant-numeric: tabular-nums;
+    align-items: center;
   }
   .metrics span { padding: 4px 10px; background: color-mix(in srgb, canvastext 8%, transparent); border-radius: 4px; }
   .metrics b { font-weight: 600; }
+  .signal { display: flex; align-items: center; gap: 14px; margin: 8px 0; }
+  .spinner {
+    width: 36px; height: 36px; border-radius: 50%;
+    background: conic-gradient(#3b82f6, #3b82f6 25%, transparent 25%, transparent);
+    animation: spin 1s linear infinite;
+    flex: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .frame-strip {
+    display: flex; align-items: flex-end; gap: 1px;
+    height: 36px; flex: 1; max-width: 600px;
+    background: color-mix(in srgb, canvastext 4%, transparent); padding: 2px; border-radius: 3px;
+  }
+  .frame-strip .bar {
+    width: 6px; background: #22c55e; border-radius: 1px; transition: none;
+  }
+  .frame-strip .bar.warn { background: #f59e0b; }
+  .frame-strip .bar.bad  { background: #ef4444; }
   .nodes {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     gap: 2px;
     margin-top: 16px;
   }
   .node {
-    padding: 4px 6px;
-    font-size: 11px;
+    padding: 4px 6px; font-size: 11px;
     background: color-mix(in srgb, canvastext 5%, transparent);
-    border-radius: 2px;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
+    border-radius: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   }
-  .node--deep > .node { margin-left: 6px; }
+  .chain { padding: 4px 6px; font-size: 11px; background: color-mix(in srgb, canvastext 6%, transparent); border-radius: 2px; }
+  .chain > .chain { margin-left: 4px; padding: 1px 4px; }
 </style>
 </head>
 <body>
 <div class="repro-header">
   <h1>Mac Chrome resize-recalc regression repro</h1>
   <p>
-    <b>Bug:</b> on macOS, Chrome ≥ <code>147.0.7683.0</code> recalculates styles synchronously
-    on every window-resize event, blocking the main thread on pages with large DOM + large CSS.
+    <b>Bug:</b> on macOS, Chrome ≥ <code>147.0.7683.0</code> runs a synchronous style recalc on
+    <em>every</em> resize event instead of coalescing them at the compositor.
     Does not reproduce on Windows or Linux. Does not reproduce on Chrome ≤ <code>146</code>.
   </p>
   <p>
@@ -55,77 +72,123 @@
     </a>.
   </p>
   <p>
-    <b>How to reproduce:</b> drag a window edge to resize this page slowly over ~3 seconds.
-    On affected builds the page freezes; on unaffected builds recalculations are skipped.
-    Open DevTools → Performance, record a resize, observe "Recalculate Style" tasks.
+    <b>How to reproduce:</b> drag a window edge for ~3 seconds.
+    Watch the spinner and the frame-time strip.
+    On affected builds the spinner <em>freezes</em> and bars turn red. On unaffected builds the spinner keeps turning and bars stay green / yellow.
   </p>
+  <div class="signal">
+    <div class="spinner" title="Should keep spinning during resize on unaffected builds"></div>
+    <div id="frame-strip" class="frame-strip" title="Last 80 frame durations. green<16ms, yellow<50ms, red≥50ms"></div>
+  </div>
   <div class="metrics">
     <span>DOM nodes: <b id="m-nodes">0</b></span>
     <span>CSS rules: <b id="m-rules">0</b></span>
+    <span>Resize events: <b id="m-resize">0</b></span>
+    <span>Frames &gt;50ms: <b id="m-slow">0</b></span>
+    <span>Last frame: <b id="m-frame">—</b></span>
   </div>
 </div>
+
 <div id="nodes" class="nodes"></div>
 
 <script>
-// ---------- 1) Generate ~10,000 DOM nodes ----------
+// =============================================================================
+// 1) DOM — 3,000 nodes, depth up to ~50
+// =============================================================================
 (() => {
   const root = document.getElementById('nodes');
-  const FLAT = 7000;
-  const NESTED_PARENTS = 1000;   // each gets 3 children → +3000
   const frag = document.createDocumentFragment();
 
-  for (let i = 0; i < FLAT; i++) {
+  // 2,500 shallow grid nodes (varied class/data combos so selector matching has work)
+  for (let i = 0; i < 2500; i++) {
     const d = document.createElement('div');
-    d.className = `node node--flat kind-${i % 23} state-${i % 7} bucket-${i % 11}`;
+    d.className = `node kind-${i % 23} state-${i % 7} bucket-${i % 11} group-${i % 13}`;
     d.dataset.idx = i;
     d.dataset.kind = `k${i % 23}`;
     d.dataset.state = i % 5 === 0 ? 'active' : 'idle';
     d.textContent = `n${i}`;
     frag.appendChild(d);
   }
-  for (let i = 0; i < NESTED_PARENTS; i++) {
-    const p = document.createElement('div');
-    p.className = `node node--deep group-${i % 13}`;
-    p.dataset.idx = FLAT + i;
-    for (let j = 0; j < 3; j++) {
-      const c = document.createElement('div');
-      c.className = `node node--child child-${j} kind-${(i + j) % 23}`;
-      c.textContent = `n${FLAT + i}.${j}`;
-      p.appendChild(c);
+
+  // 10 deep chains of depth 50 (matches Datadog's max-depth ~42–50)
+  for (let i = 0; i < 10; i++) {
+    let host = document.createElement('div');
+    host.className = `chain chain-root group-${i % 13}`;
+    host.textContent = `chain ${i} root`;
+    frag.appendChild(host);
+    let cur = host;
+    for (let d = 1; d < 50; d++) {
+      const next = document.createElement('div');
+      next.className = `chain depth-${d} kind-${d % 23} state-${d % 7}`;
+      next.textContent = `d${d}`;
+      cur.appendChild(next);
+      cur = next;
     }
-    frag.appendChild(p);
   }
+
   root.appendChild(frag);
-  document.getElementById('m-nodes').textContent = document.querySelectorAll('.node').length.toLocaleString();
+  document.getElementById('m-nodes').textContent =
+    document.querySelectorAll('.node, .chain').length.toLocaleString();
 })();
 
-// ---------- 2) Generate ~50,000 CSS rules ----------
-// Mix of selector shapes that the style engine cannot trivially bloom-filter away,
-// matching the cost model observed in production apps with monolithic CSS bundles.
+// =============================================================================
+// 2) CSS — ~60,000 rules matching real-app proportions
+//    :has 300 / :not 7000 / pseudo-state 5000 / [attr] 1000 /
+//    deep-combinator 4000 / viewport-unit 500 / @media 800 / @keyframes 500 /
+//    remainder filler class rules
+// =============================================================================
 (() => {
   const parts = [];
-  const N = 50000;
 
-  // Bucket A: simple class rules (most won't match → dead weight scanned each recalc)
-  for (let i = 0; i < N * 0.5; i++) {
-    parts.push(`.unused-class-${i}{color:rgb(${i % 256},${(i * 3) % 256},${(i * 7) % 256});}`);
+  // Helper: chunk a bunch of similar rules
+  const push = (s) => parts.push(s);
+
+  // :has rules — 300
+  for (let i = 0; i < 300; i++) {
+    push(`.kind-${i % 23}:has(.state-${i % 7}){outline:${i % 3}px solid transparent;}`);
   }
-  // Bucket B: descendant chains + attribute selectors
-  for (let i = 0; i < N * 0.2; i++) {
-    parts.push(`.zone-${i % 50} [data-kind="k${i % 23}"] .child-${i % 3}{margin-left:${i % 8}px;}`);
+
+  // :not rules — 7,000
+  for (let i = 0; i < 7000; i++) {
+    push(`.kind-${i % 23}:not(.bucket-${(i + 1) % 11}):not(.state-${(i + 2) % 7}){margin-left:${i % 4}px;}`);
   }
-  // Bucket C: pseudo-classes / :not() (state-dependent, recomputed on layout-affecting changes)
-  for (let i = 0; i < N * 0.15; i++) {
-    parts.push(`.kind-${i % 23}:not(.bucket-${(i + 1) % 11}):hover{background:hsl(${i % 360} 50% 50%);}`);
+
+  // Pseudo-state rules — 5,000 (:hover, :focus, :active, :focus-within)
+  const states = [':hover', ':focus', ':active', ':focus-within', ':focus-visible'];
+  for (let i = 0; i < 5000; i++) {
+    push(`.kind-${i % 23}${states[i % states.length]}{background:hsl(${i % 360} 50% 50% / .1);}`);
   }
-  // Bucket D: viewport-dependent rules (these are why resize triggers recalc)
-  for (let i = 0; i < N * 0.1; i++) {
-    const bp = 320 + (i % 50) * 20;
-    parts.push(`@media (min-width:${bp}px){.kind-${i % 23} .child-${i % 3}{padding:${i % 4}px;}}`);
+
+  // Attribute selector rules — 1,000
+  for (let i = 0; i < 1000; i++) {
+    push(`[data-kind="k${i % 23}"][data-state="${i % 2 === 0 ? 'active' : 'idle'}"]{opacity:${0.9 + (i % 10) * 0.01};}`);
   }
-  // Bucket E: vw/vh units — direct viewport dependency, force per-resize recalc
-  for (let i = 0; i < N * 0.05; i++) {
-    parts.push(`.state-${i % 7}.bucket-${i % 11}{min-width:${(i % 20) + 1}vw;max-height:${(i % 30) + 5}vh;}`);
+
+  // Deep combinator rules (>2 combinators) — 4,000
+  for (let i = 0; i < 4000; i++) {
+    push(`.group-${i % 13} .kind-${i % 23} .state-${i % 7} .bucket-${i % 11}{padding-left:${i % 5}px;}`);
+  }
+
+  // Viewport-unit rules — 500
+  for (let i = 0; i < 500; i++) {
+    push(`.state-${i % 7}.bucket-${i % 11}{min-width:${(i % 20) + 1}vw;max-height:${(i % 30) + 5}vh;}`);
+  }
+
+  // @media wrappers — 800
+  for (let i = 0; i < 800; i++) {
+    const bp = 320 + (i % 60) * 20;
+    push(`@media (min-width:${bp}px){.kind-${i % 23} .state-${i % 7}{padding-right:${i % 4}px;}}`);
+  }
+
+  // @keyframes — 500
+  for (let i = 0; i < 500; i++) {
+    push(`@keyframes anim-${i}{from{opacity:1;}to{opacity:${0.5 + (i % 50) / 100};}}`);
+  }
+
+  // Filler simple class rules to reach ~60k total
+  const remaining = 60000 - parts.length;
+  for (let i = 0; i < remaining; i++) {
+    push(`.unused-class-${i}{color:rgb(${i % 256},${(i * 3) % 256},${(i * 7) % 256});}`);
   }
 
   const style = document.createElement('style');
@@ -133,34 +196,68 @@
   style.textContent = parts.join('\n');
   document.head.appendChild(style);
 
-  // Count rules accurately via CSSOM
-  let ruleCount = 0;
+  let count = 0;
   try {
-    for (const r of style.sheet.cssRules) {
-      ruleCount++;
-      if (r.cssRules) ruleCount += r.cssRules.length;
-    }
+    const walk = (rules) => {
+      for (const r of rules) {
+        count++;
+        if (r.cssRules) walk(r.cssRules);
+      }
+    };
+    walk(style.sheet.cssRules);
   } catch (e) {
-    ruleCount = parts.length;
+    count = parts.length;
   }
-  document.getElementById('m-rules').textContent = ruleCount.toLocaleString();
+  document.getElementById('m-rules').textContent = count.toLocaleString();
 })();
 
-// ---------- 3) Observe resize-triggered recalcs ----------
-// PerformanceObserver for long tasks during resize. Logs to console so triager can
-// reproduce via DevTools → Console.
+// =============================================================================
+// 3) Instrumentation — frame-time strip + resize counter
+//    The visible signal: bad builds run sync recalc per resize event → main
+//    thread blocks every frame during drag; good builds coalesce → frames stay short.
+// =============================================================================
 (() => {
-  if (!('PerformanceObserver' in window)) return;
-  try {
-    const po = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        if (entry.duration > 50) {
-          console.log(`[long task] ${entry.duration.toFixed(1)} ms during/after resize`);
-        }
-      }
-    });
-    po.observe({ type: 'longtask', buffered: true });
-  } catch (e) { /* ignore */ }
+  const strip = document.getElementById('frame-strip');
+  const mFrame = document.getElementById('m-frame');
+  const mSlow = document.getElementById('m-slow');
+  const mResize = document.getElementById('m-resize');
+
+  const N = 80;
+  const bars = [];
+  for (let i = 0; i < N; i++) {
+    const b = document.createElement('div');
+    b.className = 'bar';
+    b.style.height = '2px';
+    strip.appendChild(b);
+    bars.push(b);
+  }
+
+  let last = performance.now();
+  let slowFrames = 0;
+  const tick = (now) => {
+    const dt = now - last;
+    last = now;
+    // shift left, push right
+    for (let i = 0; i < N - 1; i++) {
+      bars[i].style.height = bars[i + 1].style.height;
+      bars[i].className = bars[i + 1].className;
+    }
+    const h = Math.min(34, Math.max(2, dt * 0.5));
+    const tail = bars[N - 1];
+    tail.style.height = h.toFixed(0) + 'px';
+    tail.className = 'bar' + (dt >= 50 ? ' bad' : dt >= 16.7 ? ' warn' : '');
+    if (dt >= 50) slowFrames++;
+    mFrame.textContent = dt.toFixed(1) + ' ms';
+    mSlow.textContent = slowFrames.toLocaleString();
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+
+  let resizeCount = 0;
+  window.addEventListener('resize', () => {
+    resizeCount++;
+    mResize.textContent = resizeCount.toLocaleString();
+  });
 })();
 </script>
 </body>

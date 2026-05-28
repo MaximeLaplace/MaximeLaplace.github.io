@@ -72,6 +72,13 @@
     </a>.
   </p>
   <p>
+    <b>Suspected commit:</b>
+    <a href="https://chromium.googlesource.com/chromium/src/+/8b74eeb7900126d50c16bf36b010ce757b9ffc3a">
+      <code>8b74eeb7</code> — [Mac] Use specified deadline 0 when resizing
+    </a>.
+    Removes the browser→renderer back-pressure that previously throttled how fast new viewport sizes reached the renderer, so each Mac resize tick now triggers its own synchronous style recalc.
+  </p>
+  <p>
     <b>How to reproduce:</b> drag a window edge for ~3 seconds.
     Watch the spinner and the frame-time strip.
     On affected builds the spinner <em>freezes</em> and bars turn red. On unaffected builds the spinner keeps turning and bars stay green / yellow.

@@ -47,10 +47,12 @@
     Does not reproduce on Windows or Linux. Does not reproduce on Chrome ≤ <code>146</code>.
   </p>
   <p>
-    <b>Suspect commit:</b>
-    <a href="https://chromium.googlesource.com/chromium/src/+/8b74eeb7900126d50c16bf36b010ce757b9ffc3a">
-      8b74eeb7 — [Mac] Use specified deadline 0 when resizing
-    </a>
+    <b>Bisect range:</b>
+    last known good <code>1583402</code> → first known bad <code>1583431</code>
+    (both tagged build version <code>147.0.7683.0</code>).
+    <a href="https://chromium.googlesource.com/chromium/src/+log/f0a6820de36d29b4b0f22321305bec7e15c51eaf..8d5606730f5c372fc27633bf39b1708718ad6e6b">
+      Changelog
+    </a>.
   </p>
   <p>
     <b>How to reproduce:</b> drag a window edge to resize this page slowly over ~3 seconds.

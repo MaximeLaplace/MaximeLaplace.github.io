@@ -40,9 +40,11 @@
   }
   .frame-strip .bar.warn { background: #f59e0b; }
   .frame-strip .bar.bad  { background: #ef4444; }
-  .nodes {
+
+  /* Viewport-driven layout — genuinely re-layouts on every viewport change */
+  .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(calc(8vw + 60px), 1fr));
     gap: 2px;
     margin-top: 16px;
   }
@@ -50,9 +52,30 @@
     padding: 4px 6px; font-size: 11px;
     background: color-mix(in srgb, canvastext 5%, transparent);
     border-radius: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    min-width: calc(4vw + 20px);
+  }
+  .chains {
+    margin-top: 12px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(calc(10vw + 80px), 1fr));
+    gap: 4px;
   }
   .chain { padding: 4px 6px; font-size: 11px; background: color-mix(in srgb, canvastext 6%, transparent); border-radius: 2px; }
   .chain > .chain { margin-left: 4px; padding: 1px 4px; }
+
+  /* Observer targets — sized in vw/vh so layout pass is non-trivial */
+  .observed {
+    width: calc(8vw + 40px); height: calc(2vh + 18px);
+    padding: 2px 6px;
+    background: color-mix(in srgb, #3b82f6 12%, transparent);
+    border-radius: 3px;
+    font-size: 10px;
+    overflow: hidden;
+  }
+  .observed-grid {
+    display: flex; flex-wrap: wrap; gap: 2px;
+    margin-top: 10px;
+  }
 </style>
 </head>
 <body>
@@ -79,9 +102,12 @@
     Removes the browser→renderer back-pressure that previously throttled how fast new viewport sizes reached the renderer, so each Mac resize tick now triggers its own synchronous style recalc.
   </p>
   <p>
-    <b>How to reproduce:</b> drag a window edge for ~3 seconds.
+    <b>How to reproduce:</b> drag the <em>native macOS window edge</em> for ~3 seconds.
     Watch the spinner and the frame-time strip.
     On affected builds the spinner <em>freezes</em> and bars turn red. On unaffected builds the spinner keeps turning and bars stay green / yellow.
+  </p>
+  <p>
+    <b>Important:</b> the resize must be triggered by the native window edge or corner — <em>not</em> by dragging a DevTools side-panel divider. DevTools-driven resize bypasses <code>browser_compositor_view_mac.mm</code> and does not exercise the regressed code path, so it appears smooth on both builds.
   </p>
   <div class="signal">
     <div class="spinner" title="Should keep spinning during resize on unaffected builds"></div>
@@ -91,40 +117,47 @@
     <span>DOM nodes: <b id="m-nodes">0</b></span>
     <span>CSS rules: <b id="m-rules">0</b></span>
     <span>Resize events: <b id="m-resize">0</b></span>
+    <span>ResizeObserver fires: <b id="m-ro">0</b></span>
     <span>Frames &gt;50ms: <b id="m-slow">0</b></span>
     <span>Last frame: <b id="m-frame">—</b></span>
   </div>
 </div>
 
-<div id="nodes" class="nodes"></div>
+<div class="observed-grid" id="observed-grid"></div>
+<div id="nodes" class="grid"></div>
+<div id="chains" class="chains"></div>
 
 <script>
 // =============================================================================
-// 1) DOM — 3,000 nodes, depth up to ~50
+// 1) DOM — 8,000 nodes total, depth ~35.
+//    Calibrated against real apps: Yahoo Finance ~5,900, YouTube ~27,000.
 // =============================================================================
 (() => {
-  const root = document.getElementById('nodes');
-  const frag = document.createDocumentFragment();
+  const grid = document.getElementById('nodes');
+  const chains = document.getElementById('chains');
+  const frag1 = document.createDocumentFragment();
+  const frag2 = document.createDocumentFragment();
 
-  // 2,500 shallow grid nodes (varied class/data combos so selector matching has work)
-  for (let i = 0; i < 2500; i++) {
+  // 6,800 flat grid nodes
+  for (let i = 0; i < 6800; i++) {
     const d = document.createElement('div');
     d.className = `node kind-${i % 23} state-${i % 7} bucket-${i % 11} group-${i % 13}`;
     d.dataset.idx = i;
     d.dataset.kind = `k${i % 23}`;
     d.dataset.state = i % 5 === 0 ? 'active' : 'idle';
     d.textContent = `n${i}`;
-    frag.appendChild(d);
+    frag1.appendChild(d);
   }
+  grid.appendChild(frag1);
 
-  // 10 deep chains of depth 50 (matches Datadog's max-depth ~42–50)
-  for (let i = 0; i < 10; i++) {
+  // 35 chains of depth 35 = 1,225 nodes (max depth ~35 like YouTube)
+  for (let i = 0; i < 35; i++) {
     let host = document.createElement('div');
     host.className = `chain chain-root group-${i % 13}`;
-    host.textContent = `chain ${i} root`;
-    frag.appendChild(host);
+    host.textContent = `chain ${i}`;
+    frag2.appendChild(host);
     let cur = host;
-    for (let d = 1; d < 50; d++) {
+    for (let d = 1; d < 35; d++) {
       const next = document.createElement('div');
       next.className = `chain depth-${d} kind-${d % 23} state-${d % 7}`;
       next.textContent = `d${d}`;
@@ -132,71 +165,59 @@
       cur = next;
     }
   }
+  chains.appendChild(frag2);
 
-  root.appendChild(frag);
   document.getElementById('m-nodes').textContent =
-    document.querySelectorAll('.node, .chain').length.toLocaleString();
+    document.querySelectorAll('.node, .chain, .observed').length.toLocaleString();
 })();
 
 // =============================================================================
-// 2) CSS — ~60,000 rules matching real-app proportions
-//    :has 300 / :not 7000 / pseudo-state 5000 / [attr] 1000 /
-//    deep-combinator 4000 / viewport-unit 500 / @media 800 / @keyframes 500 /
-//    remainder filler class rules
+// 2) CSS — ~18,000 rules, proportions matching real heavy apps.
+//    Calibrated against Yahoo Finance / YouTube / Datadog medians.
 // =============================================================================
 (() => {
   const parts = [];
-
-  // Helper: chunk a bunch of similar rules
   const push = (s) => parts.push(s);
 
-  // :has rules — 300
-  for (let i = 0; i < 300; i++) {
+  // :has — Yahoo 78, YouTube 13, Datadog 218
+  for (let i = 0; i < 50; i++)
     push(`.kind-${i % 23}:has(.state-${i % 7}){outline:${i % 3}px solid transparent;}`);
-  }
 
-  // :not rules — 7,000
-  for (let i = 0; i < 7000; i++) {
-    push(`.kind-${i % 23}:not(.bucket-${(i + 1) % 11}):not(.state-${(i + 2) % 7}){margin-left:${i % 4}px;}`);
-  }
+  // :not — Yahoo 974, YouTube 1640, Datadog 6140 (single negation, cheaper to evaluate)
+  for (let i = 0; i < 1200; i++)
+    push(`.kind-${i % 23}:not(.bucket-${(i + 1) % 11}){margin-left:${i % 4}px;}`);
 
-  // Pseudo-state rules — 5,000 (:hover, :focus, :active, :focus-within)
+  // Pseudo-state — Yahoo 1646, YouTube 1085, Datadog 4748
   const states = [':hover', ':focus', ':active', ':focus-within', ':focus-visible'];
-  for (let i = 0; i < 5000; i++) {
+  for (let i = 0; i < 1200; i++)
     push(`.kind-${i % 23}${states[i % states.length]}{background:hsl(${i % 360} 50% 50% / .1);}`);
-  }
 
-  // Attribute selector rules — 1,000
-  for (let i = 0; i < 1000; i++) {
+  // Attribute selectors — Yahoo 2099, YouTube 5206 (heavy bucket in real apps)
+  for (let i = 0; i < 2500; i++)
     push(`[data-kind="k${i % 23}"][data-state="${i % 2 === 0 ? 'active' : 'idle'}"]{opacity:${0.9 + (i % 10) * 0.01};}`);
-  }
 
-  // Deep combinator rules (>2 combinators) — 4,000
-  for (let i = 0; i < 4000; i++) {
+  // Deep combinator (>2) — Yahoo 4589, YouTube 1244, Datadog 3415
+  for (let i = 0; i < 1500; i++)
     push(`.group-${i % 13} .kind-${i % 23} .state-${i % 7} .bucket-${i % 11}{padding-left:${i % 5}px;}`);
-  }
 
-  // Viewport-unit rules — 500
-  for (let i = 0; i < 500; i++) {
+  // Viewport-unit — Yahoo 129, YouTube 129, Datadog 464 (drives resize-triggered recalc)
+  for (let i = 0; i < 150; i++)
     push(`.state-${i % 7}.bucket-${i % 11}{min-width:${(i % 20) + 1}vw;max-height:${(i % 30) + 5}vh;}`);
-  }
 
-  // @media wrappers — 800
-  for (let i = 0; i < 800; i++) {
+  // @media wrappers — Yahoo 768, YouTube 752, Datadog 703
+  for (let i = 0; i < 700; i++) {
     const bp = 320 + (i % 60) * 20;
     push(`@media (min-width:${bp}px){.kind-${i % 23} .state-${i % 7}{padding-right:${i % 4}px;}}`);
   }
 
-  // @keyframes — 500
-  for (let i = 0; i < 500; i++) {
+  // @keyframes — Yahoo 350, YouTube 254, Datadog 402
+  for (let i = 0; i < 250; i++)
     push(`@keyframes anim-${i}{from{opacity:1;}to{opacity:${0.5 + (i % 50) / 100};}}`);
-  }
 
-  // Filler simple class rules to reach ~60k total
-  const remaining = 60000 - parts.length;
-  for (let i = 0; i < remaining; i++) {
+  // Filler simple class rules to reach ~18k
+  const remaining = 18000 - parts.length;
+  for (let i = 0; i < remaining; i++)
     push(`.unused-class-${i}{color:rgb(${i % 256},${(i * 3) % 256},${(i * 7) % 256});}`);
-  }
 
   const style = document.createElement('style');
   style.id = 'generated-bulk-css';
@@ -205,23 +226,69 @@
 
   let count = 0;
   try {
-    const walk = (rules) => {
-      for (const r of rules) {
-        count++;
-        if (r.cssRules) walk(r.cssRules);
-      }
-    };
+    const walk = (rules) => { for (const r of rules) { count++; if (r.cssRules) walk(r.cssRules); } };
     walk(style.sheet.cssRules);
-  } catch (e) {
-    count = parts.length;
-  }
+  } catch (e) { count = parts.length; }
   document.getElementById('m-rules').textContent = count.toLocaleString();
 })();
 
 // =============================================================================
-// 3) Instrumentation — frame-time strip + resize counter
-//    The visible signal: bad builds run sync recalc per resize event → main
-//    thread blocks every frame during drag; good builds coalesce → frames stay short.
+// 3) ResizeObserver subscribers — mimics chart libs / virtualized lists / fin-streamer
+//    30 elements each with its own observer, callbacks do tiny work per fire
+// =============================================================================
+(() => {
+  const wrap = document.getElementById('observed-grid');
+  const frag = document.createDocumentFragment();
+  const elems = [];
+  for (let i = 0; i < 30; i++) {
+    const el = document.createElement('div');
+    el.className = 'observed';
+    el.textContent = `obs ${i}`;
+    frag.appendChild(el);
+    elems.push(el);
+  }
+  wrap.appendChild(frag);
+
+  let fires = 0;
+  const mRo = document.getElementById('m-ro');
+  for (const el of elems) {
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        const w = Math.round(e.contentRect.width);
+        const h = Math.round(e.contentRect.height);
+        el.textContent = `${w}×${h}`;
+      }
+      fires++;
+      mRo.textContent = fires.toLocaleString();
+    });
+    ro.observe(el);
+  }
+})();
+
+// =============================================================================
+// 4) Fake "subscriber" resize listeners — mimics ad-hoc resize handlers in real apps
+//    15 window listeners (matches Yahoo Finance 7, YouTube 17), tiny JS-only work.
+// =============================================================================
+(() => {
+  const targets = [];
+  const allNodes = document.querySelectorAll('.node');
+  for (let i = 0; i < 15 && i < allNodes.length; i++) {
+    targets.push(allNodes[(i * 47) % allNodes.length]);
+  }
+
+  for (let i = 0; i < 15; i++) {
+    const target = targets[i];
+    const seed = i * 31;
+    window.addEventListener('resize', () => {
+      // Cheap JS-only work: arithmetic + dataset write. No layout forcing.
+      const v = (window.innerWidth ^ seed) >>> 0;
+      target.dataset.v = String(v & 0xffff);
+    }, { passive: true });
+  }
+})();
+
+// =============================================================================
+// 5) Instrumentation — frame-time strip + resize counter + slow-frame counter
 // =============================================================================
 (() => {
   const strip = document.getElementById('frame-strip');
@@ -244,7 +311,6 @@
   const tick = (now) => {
     const dt = now - last;
     last = now;
-    // shift left, push right
     for (let i = 0; i < N - 1; i++) {
       bars[i].style.height = bars[i + 1].style.height;
       bars[i].className = bars[i + 1].className;

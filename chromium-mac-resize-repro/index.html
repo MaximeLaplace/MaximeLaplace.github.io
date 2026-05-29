@@ -63,19 +63,6 @@
   .chain { padding: 4px 6px; font-size: 11px; background: color-mix(in srgb, canvastext 6%, transparent); border-radius: 2px; }
   .chain > .chain { margin-left: 4px; padding: 1px 4px; }
 
-  /* Observer targets — sized in vw/vh so layout pass is non-trivial */
-  .observed {
-    width: calc(8vw + 40px); height: calc(2vh + 18px);
-    padding: 2px 6px;
-    background: color-mix(in srgb, #3b82f6 12%, transparent);
-    border-radius: 3px;
-    font-size: 10px;
-    overflow: hidden;
-  }
-  .observed-grid {
-    display: flex; flex-wrap: wrap; gap: 2px;
-    margin-top: 10px;
-  }
   .section-title {
     font-size: 13px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -123,14 +110,10 @@
     <span>DOM nodes: <b id="m-nodes">0</b></span>
     <span>CSS rules: <b id="m-rules">0</b></span>
     <span>Resize events: <b id="m-resize">0</b></span>
-    <span>ResizeObserver fires: <b id="m-ro">0</b></span>
     <span>Frames &gt;50ms: <b id="m-slow">0</b></span>
     <span>Last frame: <b id="m-frame">—</b></span>
   </div>
 </div>
-
-<h2 class="section-title">ResizeObservers</h2>
-<div class="observed-grid" id="observed-grid"></div>
 
 <h2 class="section-title">Flat divs</h2>
 <div id="nodes" class="grid"></div>
@@ -140,8 +123,7 @@
 
 <script>
 // =============================================================================
-// 1) DOM — 8,000 nodes total, depth ~35.
-//    Calibrated against real apps: Yahoo Finance ~5,900, YouTube ~27,000.
+// 1) DOM — 3,000 nodes total, depth ~35.
 // =============================================================================
 (() => {
   const grid = document.getElementById('nodes');
@@ -149,8 +131,8 @@
   const frag1 = document.createDocumentFragment();
   const frag2 = document.createDocumentFragment();
 
-  // 6,800 flat grid nodes
-  for (let i = 0; i < 6800; i++) {
+  // 2,500 flat grid nodes
+  for (let i = 0; i < 2500; i++) {
     const d = document.createElement('div');
     d.className = `node kind-${i % 23} state-${i % 7} bucket-${i % 11} group-${i % 13}`;
     d.dataset.idx = i;
@@ -161,8 +143,8 @@
   }
   grid.appendChild(frag1);
 
-  // 35 chains of depth 35 = 1,225 nodes (max depth ~35 like YouTube)
-  for (let i = 0; i < 35; i++) {
+  // 14 chains of depth 35 = ~490 nodes
+  for (let i = 0; i < 14; i++) {
     let host = document.createElement('div');
     host.className = `chain chain-root group-${i % 13}`;
     host.textContent = `chain ${i}`;
@@ -179,54 +161,53 @@
   chains.appendChild(frag2);
 
   document.getElementById('m-nodes').textContent =
-    document.querySelectorAll('.node, .chain, .observed').length.toLocaleString();
+    document.querySelectorAll('.node, .chain').length.toLocaleString();
 })();
 
 // =============================================================================
-// 2) CSS — ~18,000 rules, proportions matching real heavy apps.
-//    Calibrated against Yahoo Finance / YouTube / Datadog medians.
+// 2) CSS — ~10,000 rules, proportions matching real heavy apps.
 // =============================================================================
 (() => {
   const parts = [];
   const push = (s) => parts.push(s);
 
-  // :has — Yahoo 78, YouTube 13, Datadog 218
-  for (let i = 0; i < 50; i++)
+  // :has
+  for (let i = 0; i < 30; i++)
     push(`.kind-${i % 23}:has(.state-${i % 7}){outline:${i % 3}px solid transparent;}`);
 
-  // :not — Yahoo 974, YouTube 1640, Datadog 6140 (single negation, cheaper to evaluate)
-  for (let i = 0; i < 1200; i++)
+  // :not
+  for (let i = 0; i < 700; i++)
     push(`.kind-${i % 23}:not(.bucket-${(i + 1) % 11}){margin-left:${i % 4}px;}`);
 
-  // Pseudo-state — Yahoo 1646, YouTube 1085, Datadog 4748
+  // Pseudo-state
   const states = [':hover', ':focus', ':active', ':focus-within', ':focus-visible'];
-  for (let i = 0; i < 1200; i++)
+  for (let i = 0; i < 700; i++)
     push(`.kind-${i % 23}${states[i % states.length]}{background:hsl(${i % 360} 50% 50% / .1);}`);
 
-  // Attribute selectors — Yahoo 2099, YouTube 5206 (heavy bucket in real apps)
-  for (let i = 0; i < 2500; i++)
+  // Attribute selectors
+  for (let i = 0; i < 1500; i++)
     push(`[data-kind="k${i % 23}"][data-state="${i % 2 === 0 ? 'active' : 'idle'}"]{opacity:${0.9 + (i % 10) * 0.01};}`);
 
-  // Deep combinator (>2) — Yahoo 4589, YouTube 1244, Datadog 3415
-  for (let i = 0; i < 1500; i++)
+  // Deep combinator (>2)
+  for (let i = 0; i < 900; i++)
     push(`.group-${i % 13} .kind-${i % 23} .state-${i % 7} .bucket-${i % 11}{padding-left:${i % 5}px;}`);
 
-  // Viewport-unit — Yahoo 129, YouTube 129, Datadog 464 (drives resize-triggered recalc)
-  for (let i = 0; i < 150; i++)
+  // Viewport-unit
+  for (let i = 0; i < 100; i++)
     push(`.state-${i % 7}.bucket-${i % 11}{min-width:${(i % 20) + 1}vw;max-height:${(i % 30) + 5}vh;}`);
 
-  // @media wrappers — Yahoo 768, YouTube 752, Datadog 703
-  for (let i = 0; i < 700; i++) {
+  // @media wrappers
+  for (let i = 0; i < 400; i++) {
     const bp = 320 + (i % 60) * 20;
     push(`@media (min-width:${bp}px){.kind-${i % 23} .state-${i % 7}{padding-right:${i % 4}px;}}`);
   }
 
-  // @keyframes — Yahoo 350, YouTube 254, Datadog 402
-  for (let i = 0; i < 250; i++)
+  // @keyframes
+  for (let i = 0; i < 150; i++)
     push(`@keyframes anim-${i}{from{opacity:1;}to{opacity:${0.5 + (i % 50) / 100};}}`);
 
-  // Filler simple class rules to reach ~18k
-  const remaining = 18000 - parts.length;
+  // Filler simple class rules to reach ~10k
+  const remaining = 10000 - parts.length;
   for (let i = 0; i < remaining; i++)
     push(`.unused-class-${i}{color:rgb(${i % 256},${(i * 3) % 256},${(i * 7) % 256});}`);
 
@@ -244,40 +225,7 @@
 })();
 
 // =============================================================================
-// 3) ResizeObserver subscribers — mimics chart libs / virtualized lists / fin-streamer
-//    30 elements each with its own observer, callbacks do tiny work per fire
-// =============================================================================
-(() => {
-  const wrap = document.getElementById('observed-grid');
-  const frag = document.createDocumentFragment();
-  const elems = [];
-  for (let i = 0; i < 30; i++) {
-    const el = document.createElement('div');
-    el.className = 'observed';
-    el.textContent = `obs ${i}`;
-    frag.appendChild(el);
-    elems.push(el);
-  }
-  wrap.appendChild(frag);
-
-  let fires = 0;
-  const mRo = document.getElementById('m-ro');
-  for (const el of elems) {
-    const ro = new ResizeObserver((entries) => {
-      for (const e of entries) {
-        const w = Math.round(e.contentRect.width);
-        const h = Math.round(e.contentRect.height);
-        el.textContent = `${w}×${h}`;
-      }
-      fires++;
-      mRo.textContent = fires.toLocaleString();
-    });
-    ro.observe(el);
-  }
-})();
-
-// =============================================================================
-// 4) Fake "subscriber" resize listeners — mimics ad-hoc resize handlers in real apps
+// 3) Fake "subscriber" resize listeners — mimics ad-hoc resize handlers in real apps
 //    15 window listeners (matches Yahoo Finance 7, YouTube 17), tiny JS-only work.
 // =============================================================================
 (() => {
@@ -299,7 +247,7 @@
 })();
 
 // =============================================================================
-// 5) Instrumentation — frame-time strip + resize counter + slow-frame counter
+// 4) Instrumentation — frame-time strip + resize counter + slow-frame counter
 // =============================================================================
 (() => {
   const strip = document.getElementById('frame-strip');
